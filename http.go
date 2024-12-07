@@ -2,6 +2,7 @@ package brotli
 
 import (
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -33,6 +34,40 @@ func HTTPCompressorWithLevel(w http.ResponseWriter, r *http.Request, level int) 
 			w.Header().Set("Content-Encoding", "gzip")
 			return gzw
 		}
+	}
+	return nopCloser{w}
+}
+
+// Like HTTPCompressor, but allows customization of the compression levels for
+// brotli and gzip. This will panic if you pass in an invalid compression level.
+func HTTPCompressorWithLevels(w http.ResponseWriter, r *http.Request, brotliLevel, gzipLevel int) io.WriteCloser {
+	return HTTPCompressorWithCustom(w, r, func(w http.ResponseWriter) io.WriteCloser {
+		return NewWriterLevel(w, brotliLevel)
+	}, func(w http.ResponseWriter) io.WriteCloser {
+		writer, err := gzip.NewWriterLevel(w, gzipLevel)
+		if err != nil {
+			panic(fmt.Sprintf("could not create gzip writer with compression level %d: %s", gzipLevel, err))
+		}
+		return writer
+	})
+}
+
+// Like HTTPCompressor, but allows you to specify factories to create a custom
+// brotli compressor or custom gzip compressor as appropriate. Use this if you
+// need to set custom options on compressors.
+func HTTPCompressorWithCustom(w http.ResponseWriter, r *http.Request, brotliFactory, gzipFactory func(http.ResponseWriter) io.WriteCloser) io.WriteCloser {
+	if w.Header().Get("Vary") == "" {
+		w.Header().Set("Vary", "Accept-Encoding")
+	}
+
+	encoding := negotiateContentEncoding(r, []string{"br", "gzip"})
+	switch encoding {
+	case "br":
+		w.Header().Set("Content-Encoding", "br")
+		return brotliFactory(w)
+	case "gzip":
+		w.Header().Set("Content-Encoding", "gzip")
+		return gzipFactory(w)
 	}
 	return nopCloser{w}
 }
